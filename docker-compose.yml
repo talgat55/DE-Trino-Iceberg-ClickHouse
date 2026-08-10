@@ -1,0 +1,72 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: lakehouse_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./warehouse:/data
+    command: server /data --console-address ":9001"
+
+  mc:
+    image: minio/mc:latest
+    container_name: lakehouse_mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000
+      ${MINIO_ROOT_USER}
+      ${MINIO_ROOT_PASSWORD};
+      do
+        sleep 2;
+      done;
+
+      mc mb --ignore-existing local/warehouse;
+      "
+
+  spark:
+    image: apache/spark:4.1.0-scala2.13-java21-python3-ubuntu
+    container_name: lakehouse_spark
+    depends_on:
+      - minio
+    environment:
+      SPARK_SUBMIT_OPTS: >-
+        -Divy.home=/opt/spark-ivy
+        -Divy.cache.dir=/opt/spark-ivy/cache
+    volumes:
+      - ./jobs:/opt/spark-apps
+      - ./data:/opt/spark-data
+      - ./ivy:/opt/spark-ivy
+    command: ["sleep", "infinity"]
+
+  trino:
+    image: trinodb/trino:latest
+    container_name: lakehouse_trino
+    depends_on:
+      - minio
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: lakehouse_clickhouse
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+      - "9002:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+volumes:
+  clickhouse_data:
