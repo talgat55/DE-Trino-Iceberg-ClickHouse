@@ -91,3 +91,8 @@ metastore_db/
 clickhouse-data/
 minio-data/
 spark-warehouse/
+
+# Ivy / Spark packages (downloaded jars + cache)
+ivy/cache/
+ivy/jars/
+*.jar
