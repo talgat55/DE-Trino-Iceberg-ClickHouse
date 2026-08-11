@@ -1,0 +1,6 @@
+<clickhouse>
+    <max_server_memory_usage>402653184</max_server_memory_usage>
+    <max_concurrent_queries>4</max_concurrent_queries>
+    <mark_cache_size>67108864</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+</clickhouse>

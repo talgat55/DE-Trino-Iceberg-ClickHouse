@@ -8,11 +8,30 @@ services:
       POSTGRES_PASSWORD: airflow
     volumes:
       - airflow_pgdata:/var/lib/postgresql/data
+    mem_limit: 256m
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U airflow -d airflow" ]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  iceberg-db-init:
+    image: postgres:15
+    container_name: lakehouse_iceberg_db_init
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: airflow
+    entrypoint: >
+      bash -c "
+      until psql -h airflow-db -U airflow -d postgres -c 'SELECT 1' >/dev/null 2>&1; do
+        sleep 1;
+      done;
+      psql -h airflow-db -U airflow -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname = 'iceberg'\" | grep -q 1
+      || psql -h airflow-db -U airflow -d postgres -c 'CREATE DATABASE iceberg';
+      "
+
   minio:
     image: minio/minio:latest
     container_name: lakehouse_minio
@@ -24,6 +43,7 @@ services:
       - "9001:9001"
     volumes:
       - ./warehouse:/data
+    mem_limit: 256m
     command: server /data --console-address ":9001"
 
   mc:
@@ -47,24 +67,40 @@ services:
     image: apache/spark:4.1.0-scala2.13-java21-python3-ubuntu
     container_name: lakehouse_spark
     depends_on:
-      - minio
+      minio:
+        condition: service_started
+      iceberg-db-init:
+        condition: service_completed_successfully
     environment:
       SPARK_SUBMIT_OPTS: >-
         -Divy.home=/opt/spark-ivy
         -Divy.cache.dir=/opt/spark-ivy/cache
+        -Xmx512m
     volumes:
       - ./jobs:/opt/spark-apps
       - ./data:/opt/spark-data
       - ./ivy:/opt/spark-ivy
+    mem_limit: 768m
     command: ["sleep", "infinity"]
 
+  # Keep created but stop when idle to save RAM on Docker Desktop (~2GB).
+  # Start on demand: docker compose start trino
   trino:
     image: trinodb/trino:latest
     container_name: lakehouse_trino
     depends_on:
-      - minio
+      minio:
+        condition: service_started
+      iceberg-db-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:UseSVE=0 -Xmx512m"
+    security_opt:
+      - seccomp:unconfined
+    mem_limit: 768m
+    restart: "no"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
 
@@ -81,6 +117,9 @@ services:
       - "9002:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/config.d/low-memory.xml:/etc/clickhouse-server/config.d/low-memory.xml:ro
+    mem_limit: 384m
+
   airflow-init:
     build:
       context: .
@@ -91,24 +130,25 @@ services:
         condition: service_healthy
       spark:
         condition: service_started
-      trino:
-        condition: service_started
       clickhouse:
         condition: service_started
-
     environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__PARALLELISM: 1
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 1
+      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
+      AIRFLOW__WEBSERVER__WORKERS: 1
+      AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: 0
+      AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: 300
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 60
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
-
-    user: "${AIRFLOW_UID:-50000}:0"
-
+    user: "0:0"
     volumes: &airflow-volumes
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
       - /var/run/docker.sock:/var/run/docker.sock
-
     command: >
       bash -c "
       airflow db migrate &&
@@ -121,6 +161,7 @@ services:
       --email airflow@example.com
       || true
       "
+
   airflow-webserver:
     build:
       context: .
@@ -131,10 +172,12 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *airflow-env
-    user: "${AIRFLOW_UID:-50000}:0"
+    user: "0:0"
     volumes: *airflow-volumes
     ports:
       - "8081:8080"
+    mem_limit: 700m
+    restart: unless-stopped
     command: webserver
 
   airflow-scheduler:
@@ -147,8 +190,10 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *airflow-env
-    user: "${AIRFLOW_UID:-50000}:0"
+    user: "0:0"
     volumes: *airflow-volumes
+    mem_limit: 450m
+    restart: unless-stopped
     command: scheduler
 
 volumes:

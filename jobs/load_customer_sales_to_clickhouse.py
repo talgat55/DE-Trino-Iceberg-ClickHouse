@@ -1,11 +1,12 @@
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     count,
     sum as spark_sum,
 )
+
+from spark_common import create_iceberg_spark
 
 
 CLICKHOUSE_HTTP_URL = "http://clickhouse:8123"
@@ -18,55 +19,6 @@ CLICKHOUSE_USER = "analytics"
 CLICKHOUSE_PASSWORD = "analytics_pass"
 
 CLICKHOUSE_TABLE = "customer_sales"
-
-
-def create_spark() -> SparkSession:
-    return (
-        SparkSession.builder
-        .appName("LoadCustomerSalesToClickHouse")
-        .config(
-            "spark.sql.extensions",
-            "org.apache.iceberg.spark.extensions."
-            "IcebergSparkSessionExtensions",
-        )
-        .config(
-            "spark.sql.catalog.lake",
-            "org.apache.iceberg.spark.SparkCatalog",
-        )
-        .config(
-            "spark.sql.catalog.lake.type",
-            "hadoop",
-        )
-        .config(
-            "spark.sql.catalog.lake.warehouse",
-            "s3a://warehouse/iceberg/",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.endpoint",
-            "http://minio:9000",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.access.key",
-            "minioadmin",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.secret.key",
-            "minioadmin123",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.path.style.access",
-            "true",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.connection.ssl.enabled",
-            "false",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.impl",
-            "org.apache.hadoop.fs.s3a.S3AFileSystem",
-        )
-        .getOrCreate()
-    )
 
 
 def truncate_customer_sales() -> None:
@@ -154,7 +106,7 @@ def write_to_clickhouse(
 
 
 def main() -> None:
-    spark = create_spark()
+    spark = create_iceberg_spark("LoadCustomerSalesToClickHouse")
 
     spark.sparkContext.setLogLevel("WARN")
 
